@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vector Search</title>
+    <script>
+        async function sendQuery() {
+            let query = document.getElementById("query").value;
+            let response = await fetch("/query", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: query })
+            });
+            let result = await response.json();
+            document.getElementById("answer").innerText = "Answer: " + result.answer;
+            document.getElementById("source").innerText = "Source: " + result.source;
+        }
+    </script>
+</head>
+<body>
+    <h1>Vector Search Engine</h1>
+    <input type="text" id="query" placeholder="Enter your query" />
+    <button onclick="sendQuery()">Search</button>
+    <p id="answer"></p>
+    <p id="source"></p>
+</body>
+</html>

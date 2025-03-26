@@ -3,12 +3,12 @@ import pickle
 import numpy as np
 import requests
 import re
+import json
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from bs4 import BeautifulSoup
 from googlesearch import search
 import urllib3
-import streamlit as st
 
 # Disable insecure request warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -93,7 +93,7 @@ def google_search_and_scrape(query, domain="acg-world.com", num_results=2):
     return results
 
 # ------------------------------
-# GROQ CLOUD API FUNCTIONS
+# GROQ CLOUD API FUNCTIONS (for summarization and final answer)
 # ------------------------------
 
 def query_groq_api(prompt, model="llama-3.3-70b-versatile"):
@@ -118,6 +118,7 @@ def query_groq_api(prompt, model="llama-3.3-70b-versatile"):
             stream=False,
             stop=None
         )
+        # Use dot notation instead of subscript:
         return chat_completion.choices[0].message.content
     except GroqError as e:
         print(f"Groq API Error: {e}")
@@ -141,75 +142,98 @@ def generate_final_answer(query, context):
     Generate a final answer using Groq Cloud API with a system prompt.
     """
     system_prompt = (
-        "You are an official representative of ACG World, a global leader in pharmaceutical and nutraceutical solutions. "
-        "Speak confidently in the first-person plural (using 'we', 'our', and 'us') and avoid repeating information. "
-        "Ensure that your response reflects our commitment to quality, innovation, and customer satisfaction while addressing the query professionally."
+    "You are an official representative of ACG World, a global leader in pharmaceutical and nutraceutical solutions. "
+    "Speak confidently in the first-person plural (using 'we', 'our', and 'us') and avoid repeating information. "
+    "Ensure that your response reflects our commitment to quality, innovation, and customer satisfaction while addressing the query professionally."
     )
+
     prompt = f"{system_prompt}\n\nQuestion: {query}\n\nContext:\n{context}"
     answer = query_groq_api(prompt)
     return answer
 
 # ------------------------------
-# STREAMLIT UI
+# MAIN QUERY LOOP
 # ------------------------------
 
-# Cache the model to avoid reloading on each run
-@st.cache_resource
-def load_model(model_name):
-    return SentenceTransformer(model_name)
+def main():
+    # Load the vector database.
+    pickle_file = r"C:\Users\surya\Desktop\webcrawling\vector_store_final.pkl"
+    vector_db = load_vector_database(pickle_file)
+    
+    # Retrieve stored data.
+    doc_vectors = vector_db["doc_vectors"]
+    metadata = vector_db["metadata"]
+    corpus = vector_db["corpus"]
+    
+    # Ensure each metadata dictionary has 'content'
+    for i, md in enumerate(metadata):
+        if "content" not in md:
+            md["content"] = corpus[i]
+    
+    # Load the SentenceTransformer model used for embeddings.
+    emb_model_name = vector_db.get("model_name", "all-MiniLM-L6-v2")
+    print(f"Loading embedding model: {emb_model_name}")
+    model = SentenceTransformer(emb_model_name)
+    
+    threshold = 0.5  # Adjust similarity threshold as needed.
+    
+    print("Enter your query (press Ctrl+C to exit):")
+    try:
+        while True:
+            query = input("Query: ").strip()
+            if not query:
+                continue
+            
+            # First, try to retrieve local matches (top 5).
+            results, max_sim = query_vector_database(query, model, doc_vectors, metadata, threshold=threshold, top_n=5)
+            context = ""
+            ref_links = []
+            source_label = ""
+            
+            if results is not None:
+                source_label = "retrieved"
+                for res in results:
+                    snippet = res["content"][:1000]  # Adjust snippet length if desired.
+                    context += f"URL: {res['url']}\nSummary: {snippet}\n\n"
+                    ref_links.append(res["url"])
+                print("Local matches found:")
+                for res in results:
+                    print(f"URL: {res['url']} | Similarity: {res['similarity']:.4f}")
+            else:
+                print(f"No local match found (max similarity {max_sim:.4f} below threshold {threshold}).")
+                print("Falling back to Google search...")
+                google_results = google_search_and_scrape(query)
+                if google_results:
+                    source_label = "googled"
+                    # Use only the top result from Google search.
+                    top_google = google_results[0]
+                    summarized = summarize_text(top_google["content"])
+                    if summarized != "NO CONTENT":
+                        new_record = {"url": top_google["url"], "content": summarized}
+                        context += f"URL: {new_record['url']}\nSummary: {new_record['content']}\n\n"
+                        ref_links.append(new_record["url"])
+                        # Update vector database with the new record.
+                        vector_db = update_vector_database(vector_db, [new_record], model)
+                        save_vector_database(vector_db, pickle_file)
+                        print("Vector database updated with new Google result:")
+                        print(f"Added URL: {new_record['url']}")
+                    else:
+                        print("Google search yielded no summarizable content.")
+                else:
+                    print("Google search found no results.")
+            
+            # Limit reference links to 2 for the final answer.
+            ref_links = ref_links[:2]
+            final_answer = generate_final_answer(query, context)
+            print("\nFinal Answer:")
+            print(final_answer)
+            if ref_links:
+                print("\nReference Links:")
+                for link in ref_links:
+                    print(f"{link} ({source_label})")
+            print("-" * 80)
+    except KeyboardInterrupt:
+        print("\nExiting query loop. Goodbye!")
 
-# Streamlit app
-st.title("ACG World Query System")
-st.write("Enter your query below to get information from ACG World's knowledge base.")
-
-pickle_file = r"C:\Users\surya\Desktop\webcrawling\vector_store_final.pkl"
-
-# Load vector database (fresh each run to reflect updates)
-vector_db = load_vector_database(pickle_file)
-model_name = vector_db.get("model_name", "all-MiniLM-L6-v2")
-model = load_model(model_name)
-
-# Form for query input
-with st.form(key='query_form'):
-    query = st.text_input("Enter your query:")
-    submit_button = st.form_submit_button(label='Submit')
-
-# Process query on submission
-if submit_button and query.strip():
-    results, max_sim = query_vector_database(query, model, vector_db["doc_vectors"], vector_db["metadata"], threshold=0.5, top_n=5)
-    context = ""
-    ref_links = []
-    source_label = ""
-
-    if results is not None:
-        source_label = "retrieved"
-        for res in results:
-            snippet = res["content"][:1000]
-            context += f"URL: {res['url']}\nSummary: {snippet}\n\n"
-            ref_links.append(res["url"])
-    else:
-        google_results = google_search_and_scrape(query)
-        if google_results:
-            source_label = "googled"
-            top_google = google_results[0]
-            summarized = summarize_text(top_google["content"])
-            if summarized != "NO CONTENT":
-                new_record = {"url": top_google["url"], "content": summarized}
-                context += f"URL: {new_record['url']}\nSummary: {new_record['content']}\n\n"
-                ref_links.append(new_record["url"])
-                vector_db = update_vector_database(vector_db, [new_record], model)
-                save_vector_database(vector_db, pickle_file)
-
-    # Limit reference links to 2
-    ref_links = ref_links[:2]
-    final_answer = generate_final_answer(query, context)
-
-    # Display results
-    st.write("### Final Answer")
-    st.write(final_answer)
-    if ref_links:
-        st.write("### Reference Links")
-        for link in ref_links:
-            st.write(f"{link} ({source_label})")
-elif submit_button:
-    st.write("Please enter a query.")
+if __name__ == "__main__":
+    main()

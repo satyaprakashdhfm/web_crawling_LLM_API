@@ -1,6 +1,6 @@
 import os
 import pickle
-import numpy as np
+import numpy as np 
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
 from bs4 import BeautifulSoup
@@ -8,16 +8,7 @@ import warnings
 import time
 import re
 import streamlit as st
-
-# Try to import the google search function
-try:
-    from googlesearch import search
-except ImportError:
-    try:
-        from googlesearch_python.googlesearch import search
-    except ImportError:
-        st.error("Google search module not found. Please install googlesearch-python using pip.")
-        search = None
+from googlesearch import search
 
 # Suppress SSL warnings for testing only
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
@@ -28,7 +19,7 @@ def load_vector_database(pickle_file=r"C:\Users\surya\Desktop\webcrawling\vector
         vector_store = pickle.load(f)
     return vector_store["vectorizer"], vector_store["doc_vectors"], vector_store["metadata"], vector_store["corpus"]
 
-def query_vector_database(query, vectorizer, doc_vectors, metadata, corpus, threshold=0.05, top_n=2):
+def query_vector_database(query, vectorizer, doc_vectors, metadata, corpus, threshold=0.0000000000000005, top_n=2):
     query_vec = vectorizer.transform([query])
     similarities = cosine_similarity(query_vec, doc_vectors).flatten()
     indices = np.where(similarities >= threshold)[0]
@@ -64,7 +55,7 @@ def scrape_content(url):
         st.error(f"Error scraping {url}: {e}")
     return ""
 
-def simple_summary(text, word_limit=100):
+def simple_summary(text, word_limit=1000):
     words = text.split()
     if len(words) <= word_limit:
         return text
@@ -83,7 +74,7 @@ def google_search_and_scrape(query, domain="acg-world.com", num_results=2):
             results.append({
                 "url": url,
                 "content": content,
-                "summary": simple_summary(content, word_limit=100)
+                "summary": simple_summary(content, word_limit=1000)
             })
     return results
 
@@ -107,7 +98,7 @@ def query_groq_api(query, context, model="llama-3.3-70b-versatile"):
             ],
             model=model,
             temperature=0.1,
-            max_completion_tokens=300,
+            max_completion_tokens=3000,
             top_p=1,
             stream=False,
             stop=None
@@ -118,67 +109,53 @@ def query_groq_api(query, context, model="llama-3.3-70b-versatile"):
     except Exception as e:
         return f"Unexpected error: {e}"
 
-### EMBED REFERENCE LINKS ###
-def embed_reference_links(answer, query, ref_links):
-    """
-    Replace the first occurrence of each unique query term in the answer with a Markdown hyperlink.
-    """
-    terms = list(set(query.lower().split()))
-    modified_answer = answer
-    for term in terms:
-        if not ref_links:
-            break
-        pattern = r'\b(' + re.escape(term) + r')\b'
-        replacement = f"[\\1]({ref_links[0]})"
-        modified_answer, count = re.subn(pattern, replacement, modified_answer, count=1, flags=re.IGNORECASE)
-        if count > 0:
-            ref_links.pop(0)
-    return modified_answer
-
 ### MAIN PIPELINE ###
 def process_query(query):
     try:
         vectorizer, doc_vectors, metadata, corpus = load_vector_database()
     except Exception as e:
-        return f"Error loading vector database: {e}", ""
+        return f"Error loading vector database: {e}", [], ""
     
     vector_results = query_vector_database(query, vectorizer, doc_vectors, metadata, corpus)
     vector_results = filter_results_by_query(vector_results, query)
     
     context = ""
     ref_links = []
+    source_label = ""
+    
     if vector_results:
+        source_label = "retrieved"
         for res in vector_results:
-            summary = simple_summary(res["content"], word_limit=100)
+            summary = simple_summary(res["content"], word_limit=1000)
             context += f"URL: {res['url']}\nSummary: {summary}\n\n"
             ref_links.append(res["url"])
     else:
         google_results = google_search_and_scrape(query)
         if google_results:
+            source_label = "googled"
             for res in google_results:
-                summary = simple_summary(res["content"], word_limit=100)
+                summary = simple_summary(res["content"], word_limit=1000)
                 context += f"URL: {res['url']}\nSummary: {summary}\n\n"
                 ref_links.append(res["url"])
         else:
-            return "No relevant content found.", ""
+            return "No relevant content found.", [], ""
     
     ref_links = ref_links[:2]
     answer = query_groq_api(query, context)
-    answer_with_links = embed_reference_links(answer, query, ref_links.copy())
-    return answer_with_links, ref_links
+    return answer, ref_links, source_label
 
 ### STREAMLIT UI ###
 st.title("ACG World Chatbot")
-st.markdown("Ask questions about ACG World and get concise answers with embedded reference links.")
+st.markdown("Ask questions about ACG World and get concise answers with reference links at the end.")
 
 query_input = st.text_input("Enter your query about ACG World:")
 
 if st.button("Submit Query") and query_input:
     with st.spinner("Processing your query..."):
-        final_answer, references = process_query(query_input)
+        final_answer, references, source_label = process_query(query_input)
     st.subheader("Final Answer:")
     st.markdown(final_answer)
     if references:
         st.subheader("Reference Links:")
         for link in references:
-            st.markdown(f"[{link}]({link})")
+            st.markdown(f"[{link}]({link}) ({source_label})")

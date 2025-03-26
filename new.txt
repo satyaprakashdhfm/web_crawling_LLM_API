@@ -6,3 +6,10 @@ export GROQ_API_KEY=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
 set GROQ_API_KEY=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
 
 C:\Users\surya\Desktop\webcrawling\vector_store.pkl
+
+openrouter:
+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
+
+
+hugginface: msitral
+set HUGGINGFACE_HUB_TOKEN=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
