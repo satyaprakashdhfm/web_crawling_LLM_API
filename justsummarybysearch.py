@@ -2,15 +2,8 @@ import warnings
 import re
 import requests
 from bs4 import BeautifulSoup
+from googlesearch import search
 
-# Try flexible import for search function
-try:
-    from googlesearch import search
-except ImportError:
-    try:
-        from googlesearch_python.googlesearch import search
-    except ImportError:
-        raise ImportError("Could not import 'search'. Please install 'googlesearch-python' with pip.")
 
 # Suppress SSL warnings for testing
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
